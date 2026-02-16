@@ -1,142 +1,134 @@
 import { chromium } from 'playwright';
 
-const PROXY_CONFIG = {
-  server: 'http://gateway.aluvia.io:8080',
-  username: 'rcCzEa6G',
-  password: 'J7wTgZQ7'
-};
+const TARGET_URL = 'https://adnade.net/ptp/?user=zedred&subid=';
+const TOTAL_TABS = 30;
 
-const TARGET_URL = 'https://playgroundt.vpsmail.name.ng/';
-const IFRAME_SELECTOR = 'iframe#s.online[src="https://adbits.online/bits-ads.php?type=1&&ids=594"]';
-const CHECK_INTERVAL = 1000; // Check every 2 seconds
-const TABS_COUNT = 30;
+const PROXY_SERVER = 'http://gateway.aluvia.io:8080';
+const BASE_USERNAME = 'rcCzEa6G';
+const PROXY_PASSWORD = 'J7wTgZQ7';
 
-async function createBrowser() {
-  return await chromium.launch({
-    headless: true,
-    proxy: PROXY_CONFIG
-  });
+const IP_CHECK_URL = 'https://api.ipify.org?format=json';
+
+function randomSession() {
+  return Math.random().toString(36).substring(2, 10);
 }
 
-async function createTabWithPage(browser) {
-  const context = await browser.newContext();
-  const page = await context.newPage();
-  return { page, context };
-}
+async function createWorker(tabIndex) {
 
-async function waitForIframeAndRequest(page) {
-  console.log(`Tab ${page.url()} - Waiting for iframe and request...`);
-  
-  // Wait for the iframe to appear
-  try {
-    await page.waitForSelector(IFRAME_SELECTOR, { timeout: 30000 });
-    console.log(`Tab ${page.url()} - Iframe found!`);
-    
-    // Wait for any network request to s.online
-    const requestPromise = page.waitForRequest(
-      request => request.url().includes('s.online'),
-      { timeout: 30000 }
-    );
-    
-    await requestPromise;
-    console.log(`Tab ${page.url()} - Request to s.online detected!`);
-    return true;
-  } catch (error) {
-    console.log(`Tab ${page.url()} - Timeout waiting for iframe or request:`, error.message);
-    return false;
-  }
-}
+  let browser, context, page;
+  let lastIP = null;
+  let sessionId = randomSession();
+  let sessionUsername = `${BASE_USERNAME}-session-${sessionId}`;
 
-async function reloadTab(page) {
-  try {
-    await page.reload({ waitUntil: 'networkidle' });
-    console.log(`Tab ${page.url()} - Reloaded`);
-    return true;
-  } catch (error) {
-    console.log(`Tab ${page.url()} - Error during reload:`, error.message);
-    return false;
-  }
-}
-
-async function manageTabLifecycle(tabInfo, tabIndex) {
-  const { page } = tabInfo;
-  
-  try {
-    // Navigate to the target URL
-    await page.goto(TARGET_URL, { waitUntil: 'networkidle', timeout: 60000 });
-    console.log(`Tab ${tabIndex} - Initial load complete`);
-    
-    while (true) {
-      // Wait for iframe and request
-      const success = await waitForIframeAndRequest(page);
-      
-      if (success) {
-        console.log(`Tab ${tabIndex} - Conditions met, reloading...`);
-        await new Promise(resolve => setTimeout(resolve, 1000)); // Brief pause before reload
-        await reloadTab(page);
-      } else {
-        console.log(`Tab ${tabIndex} - Conditions not met, checking again in ${CHECK_INTERVAL/1000} seconds...`);
-        await new Promise(resolve => setTimeout(resolve, CHECK_INTERVAL));
-      }
-    }
-  } catch (error) {
-    console.log(`Tab ${tabIndex} - Fatal error:`, error.message);
-    // Attempt to recover by reloading
+  async function launch() {
     try {
-      await reloadTab(page);
-    } catch (reloadError) {
-      console.log(`Tab ${tabIndex} - Could not recover:`, reloadError.message);
+      browser = await chromium.launch({
+        headless: false,
+        proxy: {
+          server: PROXY_SERVER,
+          username: sessionUsername,
+          password: PROXY_PASSWORD
+        },
+        args: ['--no-sandbox', '--ignore-certificate-errors']
+      });
+
+      context = await browser.newContext({
+        ignoreHTTPSErrors: true
+      });
+
+      context.setDefaultTimeout(0);
+      context.setDefaultNavigationTimeout(0);
+
+      page = await context.newPage();
+
+      page.setDefaultTimeout(0);
+      page.setDefaultNavigationTimeout(0);
+
+      await page.goto(TARGET_URL, {
+        waitUntil: 'domcontentloaded',
+        timeout: 0
+      }).catch(() => {});
+
+      const res = await page.request.get(IP_CHECK_URL).catch(() => null);
+      if (res) {
+        const data = await res.json().catch(() => null);
+        if (data) lastIP = data.ip;
+      }
+
+      console.log(`Tab ${tabIndex} started | Session ${sessionId} | IP: ${lastIP}`);
+
+    } catch (err) {
+      console.log(`Tab ${tabIndex} launch failed. Retrying...`);
+      await restart();
     }
   }
-}
 
-async function main() {
-  console.log('Starting browser with proxy...');
-  const browser = await createBrowser();
-  
-  try {
-    console.log(`Creating ${TABS_COUNT} tabs...`);
-    const tabs = [];
-    
-    // Create all tabs
-    for (let i = 0; i < TABS_COUNT; i++) {
-      const tabInfo = await createTabWithPage(browser);
-      tabs.push(tabInfo);
-      console.log(`Tab ${i} created`);
-      
-      // Small delay between tab creation to avoid overwhelming
-      await new Promise(resolve => setTimeout(resolve, 500));
-    }
-    
-    console.log('All tabs created, starting monitoring...');
-    
-    // Start monitoring each tab
-    const tabPromises = tabs.map((tabInfo, index) => 
-      manageTabLifecycle(tabInfo, index)
-    );
-    
-    // Wait for all tabs to complete (they shouldn't complete normally)
-    await Promise.all(tabPromises);
-    
-  } catch (error) {
-    console.error('Main process error:', error);
-  } finally {
-    // This will only execute if all tabs somehow complete
-    await browser.close();
+  async function restart() {
+    try {
+      if (browser) await browser.close().catch(() => {});
+    } catch {}
+
+    sessionId = randomSession();
+    sessionUsername = `${BASE_USERNAME}-session-${sessionId}`;
+    lastIP = null;
+
+    await launch();
   }
+
+  async function monitor() {
+    setInterval(async () => {
+      try {
+        if (!page || page.isClosed()) {
+          console.log(`Tab ${tabIndex} page closed. Restarting...`);
+          return restart();
+        }
+
+        const res = await page.request.get(IP_CHECK_URL).catch(() => null);
+        if (!res) return;
+
+        const data = await res.json().catch(() => null);
+        if (!data) return;
+
+        const currentIP = data.ip;
+
+        if (lastIP && currentIP !== lastIP) {
+          console.log(
+            `Tab ${tabIndex} IP changed: ${lastIP} → ${currentIP}`
+          );
+
+          lastIP = currentIP;
+
+          await page.goto(TARGET_URL, {
+            waitUntil: 'domcontentloaded',
+            timeout: 0
+          }).catch(() => {});
+        }
+
+      } catch (err) {
+        console.log(`Tab ${tabIndex} crashed. Restarting...`);
+        await restart();
+      }
+    }, 2000); // 🔥 2 second interval
+  }
+
+  await launch();
+  monitor();
 }
 
-// Handle process termination
-process.on('SIGINT', async () => {
-  console.log('Received SIGINT, closing browser...');
-  process.exit(0);
-});
+// ---- START ALL SIMULTANEOUSLY ----
+(async () => {
+  console.log(`Launching ${TOTAL_TABS} workers...`);
 
-process.on('SIGTERM', async () => {
-  console.log('Received SIGTERM, closing browser...');
-  process.exit(0);
-});
+  await Promise.all(
+    Array.from({ length: TOTAL_TABS }, (_, i) => createWorker(i))
+  );
 
-// Start the application
-console.log('Starting Playwright tab reloader...');
-main().catch(console.error);
+  console.log('All workers active.');
+
+  process.on('SIGINT', async () => {
+    console.log('\nShutting down...');
+    process.exit(0);
+  });
+
+})();
+    
