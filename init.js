@@ -4,8 +4,8 @@ const TARGET_URL = 'https://adnade.net/ptp/?user=zedred&subid=';
 const TOTAL_TABS = 30;
 
 const PROXY_SERVER = 'http://gateway.aluvia.io:8080';
-const BASE_USERNAME = 'tuQRUTax';
-const PROXY_PASSWORD = 'NHNJ797q';
+const BASE_USERNAME = 'kPcSsy5m';
+const PROXY_PASSWORD = 'eB82Wqca';
 
 const IP_CHECK_URL = 'https://api.ipify.org?format=json';
 
