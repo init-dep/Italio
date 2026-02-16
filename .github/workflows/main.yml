@@ -37,5 +37,5 @@ jobs:
       - name: Run Script in Virtual Display
         env:
           INSTANCE_ID: ${{ matrix.instance }}
-        run: xvfb-run node test.js
+        run: xvfb-run node init.js
         
