@@ -2,23 +2,25 @@ name: Playwright
 
 on:
   workflow_dispatch:
+  schedule:
+    # Approx every 5h55m, using multiple triggers
+    - cron: "0 0,5,11,16,22 * * *" 
 
 jobs:
   run-playwright:
     runs-on: ubuntu-latest
+    timeout-minutes: 355   # Stops before GitHub kills job at 6h
 
     strategy:
       fail-fast: false
       matrix:
-        instance: [1,2,3,4,5,6,7,8,9,10]
-
-    timeout-minutes: 355   # Stops before 6h hard limit
+        instance: [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15]   # 5 parallel runners
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Node
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -29,8 +31,11 @@ jobs:
       - name: Install Playwright Chromium
         run: npx playwright install --with-deps chromium
 
-      - name: Run Script
+      - name: Install Xvfb
+        run: sudo apt-get update && sudo apt-get install -y xvfb
+
+      - name: Run Script in Virtual Display
         env:
           INSTANCE_ID: ${{ matrix.instance }}
-        run: node init.js
+        run: xvfb-run node test.js
         
