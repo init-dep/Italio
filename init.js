@@ -1,11 +1,12 @@
 import { chromium } from 'playwright';
 
 const TARGET_URL = 'https://adnade.net/ptp/?user=zedred&subid=';
-const TOTAL_TABS = 30;
+const TOTAL_TABS = 100;
+const BATCH_SIZE = 10;
 
 const PROXY_SERVER = 'http://gateway.aluvia.io:8080';
-const BASE_USERNAME = 'kPcSsy5m';
-const PROXY_PASSWORD = 'eB82Wqca';
+const BASE_USERNAME = 'W2VnwvuJ';
+const PROXY_PASSWORD = 'TfWwyEJH';
 
 const IP_CHECK_URL = 'https://api.ipify.org?format=json';
 
@@ -108,20 +109,28 @@ async function createWorker(tabIndex) {
         console.log(`Tab ${tabIndex} crashed. Restarting...`);
         await restart();
       }
-    }, 2000); // 🔥 2 second interval
+    }, 2000);
   }
 
   await launch();
   monitor();
 }
 
-// ---- START ALL SIMULTANEOUSLY ----
+// ---- START ALL IN BATCHES ----
 (async () => {
-  console.log(`Launching ${TOTAL_TABS} workers...`);
+  console.log(`Launching ${TOTAL_TABS} workers in batches of ${BATCH_SIZE}...`);
 
-  await Promise.all(
-    Array.from({ length: TOTAL_TABS }, (_, i) => createWorker(i))
-  );
+  for (let i = 0; i < TOTAL_TABS; i += BATCH_SIZE) {
+    const batch = [];
+
+    for (let j = 0; j < BATCH_SIZE && i + j < TOTAL_TABS; j++) {
+      batch.push(createWorker(i + j));
+    }
+
+    await Promise.all(batch);
+
+    console.log(`Batch ${i / BATCH_SIZE + 1} launched.`);
+  }
 
   console.log('All workers active.');
 
@@ -131,4 +140,4 @@ async function createWorker(tabIndex) {
   });
 
 })();
-    
+
