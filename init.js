@@ -5,8 +5,8 @@ const TOTAL_TABS = 40;
 const BATCH_SIZE = 20;
 
 const PROXY_SERVER = 'http://gateway.aluvia.io:8080';
-const BASE_USERNAME = 'W2VnwvuJ';
-const PROXY_PASSWORD = 'TfWwyEJH';
+const BASE_USERNAME = 'NdhRzk2y';
+const PROXY_PASSWORD = 'V7weytCv';
 
 const IP_CHECK_URL = 'https://api.ipify.org?format=json';
 
