@@ -4,130 +4,213 @@ const TARGET_URL = 'https://adnade.net/ptp/?user=zedred&subid=';
 const TOTAL_TABS = 30;
 
 const PROXY_SERVER = 'http://gateway.aluvia.io:8080';
-const BASE_USERNAME = 'W2VnwvuJ';
-const PROXY_PASSWORD = 'TfWwyEJH';
+
+let CURRENT_USERNAME = 'W2VnwvuJ';
+let CURRENT_PASSWORD = 'TfWwyEJH';
+
+const NT = 0; // 0 = skip visit | 1 = visit first
 
 const IP_CHECK_URL = 'https://api.ipify.org?format=json';
+const SECRET_URL = 'https://bot.vpsmail.name.ng/secret.txt';
+
+let polling = false;
+const workers = [];
 
 function randomSession() {
-  return Math.random().toString(36).substring(2, 10);
+  return Math.random().toString(36).substring(2, 10);
 }
+
+/* ---------------- FETCH INITIAL CREDS ---------------- */
+
+async function fetchInitialCreds() {
+  try {
+    console.log('Checking secret URL for initial credentials...');
+    const res = await fetch(SECRET_URL);
+    const txt = (await res.text()).trim();
+    const parts = txt.split(/\s+/);
+
+    if (parts.length >= 2) {
+      CURRENT_USERNAME = parts[0];
+      CURRENT_PASSWORD = parts[1];
+      console.log('Loaded credentials from secret URL.');
+    } else {
+      console.log('Secret URL returned invalid format. Using defaults.');
+    }
+  } catch {
+    console.log('Could not reach secret URL. Using defaults.');
+  }
+}
+
+/* ---------------- CREDENTIAL POLLING ---------------- */
+
+async function visitBotSiteOnce() {
+  try {
+    const b = await chromium.launch({ headless: true });
+    const p = await b.newPage();
+    await p.goto('https://bot.vpsmail.name.ng', { timeout: 0 }).catch(()=>{});
+    await b.close();
+  } catch {}
+}
+
+async function startCredentialPolling() {
+  if (polling) return;
+  polling = true;
+
+  console.log('Starting credential polling...');
+
+  if (NT === 1) {
+    console.log('Opening clean tab to bot site...');
+    await visitBotSiteOnce();
+  }
+
+  const interval = setInterval(async () => {
+    try {
+      const res = await fetch(SECRET_URL).catch(()=>null);
+      if (!res) return;
+
+      const text = (await res.text()).trim();
+      const parts = text.split(/\s+/);
+      if (parts.length < 2) return;
+
+      const [newUser, newPass] = parts;
+
+      if (newUser === CURRENT_USERNAME && newPass === CURRENT_PASSWORD) {
+        console.log('Credentials unchanged...');
+        return;
+      }
+
+      console.log('New credentials detected. Updating...');
+
+      CURRENT_USERNAME = newUser;
+      CURRENT_PASSWORD = newPass;
+
+      clearInterval(interval);
+      polling = false;
+
+      console.log('Restarting all workers with new credentials...');
+      await Promise.all(workers.map(w => w.restart()));
+
+    } catch {}
+  }, 10000);
+}
+
+/* ---------------- WORKER ---------------- */
 
 async function createWorker(tabIndex) {
 
-  let browser, context, page;
-  let lastIP = null;
-  let sessionId = randomSession();
-  let sessionUsername = `${BASE_USERNAME}-session-${sessionId}`;
+  let browser, context, page;
+  let lastIP = null;
+  let sessionId;
+  let sessionUsername;
 
-  async function launch() {
-    try {
-      browser = await chromium.launch({
-        headless: false,
-        proxy: {
-          server: PROXY_SERVER,
-          username: sessionUsername,
-          password: PROXY_PASSWORD
-        },
-        args: ['--no-sandbox', '--ignore-certificate-errors']
-      });
+  async function launch() {
+    try {
 
-      context = await browser.newContext({
-        ignoreHTTPSErrors: true
-      });
+      sessionId = randomSession();
+      sessionUsername = `${CURRENT_USERNAME}-session-${sessionId}`;
 
-      context.setDefaultTimeout(0);
-      context.setDefaultNavigationTimeout(0);
+      browser = await chromium.launch({
+        headless: false,
+        proxy: {
+          server: PROXY_SERVER,
+          username: sessionUsername,
+          password: CURRENT_PASSWORD
+        },
+        args: ['--no-sandbox','--ignore-certificate-errors']
+      });
 
-      page = await context.newPage();
+      context = await browser.newContext({ ignoreHTTPSErrors: true });
+      page = await context.newPage();
 
-      page.setDefaultTimeout(0);
-      page.setDefaultNavigationTimeout(0);
+      context.setDefaultTimeout(0);
+      page.setDefaultTimeout(0);
 
-      await page.goto(TARGET_URL, {
-        waitUntil: 'domcontentloaded',
-        timeout: 0
-      }).catch(() => {});
+      await page.goto(TARGET_URL,{ waitUntil:'domcontentloaded', timeout:0 }).catch(()=>{});
 
-      const res = await page.request.get(IP_CHECK_URL).catch(() => null);
-      if (res) {
-        const data = await res.json().catch(() => null);
-        if (data) lastIP = data.ip;
-      }
+      const res = await page.request.get(IP_CHECK_URL).catch(()=>null);
+      if (!res) throw 'proxy dead';
 
-      console.log(`Tab ${tabIndex} started | Session ${sessionId} | IP: ${lastIP}`);
+      const data = await res.json().catch(()=>null);
+      if (!data) throw 'proxy dead';
 
-    } catch (err) {
-      console.log(`Tab ${tabIndex} launch failed. Retrying...`);
-      await restart();
-    }
-  }
+      lastIP = data.ip;
 
-  async function restart() {
-    try {
-      if (browser) await browser.close().catch(() => {});
-    } catch {}
+      console.log(`Tab ${tabIndex} started | ${sessionUsername} | IP ${lastIP}`);
 
-    sessionId = randomSession();
-    sessionUsername = `${BASE_USERNAME}-session-${sessionId}`;
-    lastIP = null;
+    } catch {
+      console.log(`Tab ${tabIndex} proxy failed.`);
+      await handleProxyFailure();
+      await restart();
+    }
+  }
 
-    await launch();
-  }
+  async function restart() {
+    try { if (browser) await browser.close().catch(()=>{}); } catch {}
+    lastIP = null;
+    await launch();
+  }
 
-  async function monitor() {
-    setInterval(async () => {
-      try {
-        if (!page || page.isClosed()) {
-          console.log(`Tab ${tabIndex} page closed. Restarting...`);
-          return restart();
-        }
+  async function handleProxyFailure() {
+    await startCredentialPolling();
+  }
 
-        const res = await page.request.get(IP_CHECK_URL).catch(() => null);
-        if (!res) return;
+  function monitor() {
+    setInterval(async () => {
+      try {
 
-        const data = await res.json().catch(() => null);
-        if (!data) return;
+        if (!page || page.isClosed()) {
+          console.log(`Tab ${tabIndex} closed.`);
+          return restart();
+        }
 
-        const currentIP = data.ip;
+        const res = await page.request.get(IP_CHECK_URL).catch(()=>null);
+        if (!res) throw 'proxy dead';
 
-        if (lastIP && currentIP !== lastIP) {
-          console.log(
-            `Tab ${tabIndex} IP changed: ${lastIP} → ${currentIP}`
-          );
+        const data = await res.json().catch(()=>null);
+        if (!data) throw 'proxy dead';
 
-          lastIP = currentIP;
+        const currentIP = data.ip;
 
-          await page.goto(TARGET_URL, {
-            waitUntil: 'domcontentloaded',
-            timeout: 0
-          }).catch(() => {});
-        }
+        if (lastIP && currentIP !== lastIP) {
+          console.log(`Tab ${tabIndex} IP changed ${lastIP} → ${currentIP}`);
+          lastIP = currentIP;
 
-      } catch (err) {
-        console.log(`Tab ${tabIndex} crashed. Restarting...`);
-        await restart();
-      }
-    }, 2000); // 🔥 2 second interval
-  }
+          await page.goto(TARGET_URL,{ waitUntil:'domcontentloaded', timeout:0 }).catch(()=>{});
+        }
 
-  await launch();
-  monitor();
+      } catch {
+        console.log(`Tab ${tabIndex} proxy lost.`);
+        await handleProxyFailure();
+        await restart();
+      }
+    }, 2000);
+  }
+
+  const workerObj = { restart };
+  workers.push(workerObj);
+
+  await launch();
+  monitor();
 }
 
-// ---- START ALL SIMULTANEOUSLY ----
+/* ---------------- START ---------------- */
+
 (async () => {
-  console.log(`Launching ${TOTAL_TABS} workers...`);
 
-  await Promise.all(
-    Array.from({ length: TOTAL_TABS }, (_, i) => createWorker(i))
-  );
+  await fetchInitialCreds(); // ⭐ initial credential fetch
 
-  console.log('All workers active.');
+  console.log(`Launching ${TOTAL_TABS} workers...`);
 
-  process.on('SIGINT', async () => {
-    console.log('\nShutting down...');
-    process.exit(0);
-  });
+  await Promise.all(
+    Array.from({ length: TOTAL_TABS }, (_, i) => createWorker(i))
+  );
+
+  console.log('All workers active.');
+
+  process.on('SIGINT', async () => {
+    console.log('\nShutting down...');
+    process.exit(0);
+  });
 
 })();
+            
