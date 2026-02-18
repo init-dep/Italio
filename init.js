@@ -8,7 +8,7 @@ const PROXY_SERVER = 'http://gateway.aluvia.io:8080';
 let CURRENT_USERNAME = 'W2VnwvuJ';
 let CURRENT_PASSWORD = 'TfWwyEJH';
 
-const NT = 0; // 0 = skip visit | 1 = visit first
+const NT = 0;
 
 const IP_CHECK_URL = 'https://api.ipify.org?format=json';
 const SECRET_URL = 'https://bot.vpsmail.name.ng/secret.txt';
@@ -20,7 +20,7 @@ function randomSession() {
   return Math.random().toString(36).substring(2, 10);
 }
 
-/* ---------------- FETCH INITIAL CREDS ---------------- */
+/* ---------------- INITIAL CREDS ---------------- */
 
 async function fetchInitialCreds() {
   try {
@@ -33,24 +33,24 @@ async function fetchInitialCreds() {
       CURRENT_USERNAME = parts[0];
       CURRENT_PASSWORD = parts[1];
       console.log('Loaded credentials from secret URL.');
-    } else {
-      console.log('Secret URL returned invalid format. Using defaults.');
     }
   } catch {
-    console.log('Could not reach secret URL. Using defaults.');
+    console.log('Secret URL unreachable. Using defaults.');
   }
 }
 
-/* ---------------- CREDENTIAL POLLING ---------------- */
+/* ---------------- VISIT BOT ---------------- */
 
 async function visitBotSiteOnce() {
   try {
     const b = await chromium.launch({ headless: true });
     const p = await b.newPage();
-    await p.goto('https://bot.vpsmail.name.ng', { timeout: 0 }).catch(()=>{});
+    await p.goto('https://bot.vpsmail.name.ng',{timeout:0}).catch(()=>{});
     await b.close();
   } catch {}
 }
+
+/* ---------------- POLLING ---------------- */
 
 async function startCredentialPolling() {
   if (polling) return;
@@ -58,10 +58,7 @@ async function startCredentialPolling() {
 
   console.log('Starting credential polling...');
 
-  if (NT === 1) {
-    console.log('Opening clean tab to bot site...');
-    await visitBotSiteOnce();
-  }
+  if (NT === 1) await visitBotSiteOnce();
 
   const interval = setInterval(async () => {
     try {
@@ -72,14 +69,14 @@ async function startCredentialPolling() {
       const parts = text.split(/\s+/);
       if (parts.length < 2) return;
 
-      const [newUser, newPass] = parts;
+      const [newUser,newPass] = parts;
 
       if (newUser === CURRENT_USERNAME && newPass === CURRENT_PASSWORD) {
         console.log('Credentials unchanged...');
         return;
       }
 
-      console.log('New credentials detected. Updating...');
+      console.log('New credentials detected.');
 
       CURRENT_USERNAME = newUser;
       CURRENT_PASSWORD = newPass;
@@ -87,107 +84,135 @@ async function startCredentialPolling() {
       clearInterval(interval);
       polling = false;
 
-      console.log('Restarting all workers with new credentials...');
-      await Promise.all(workers.map(w => w.restart()));
+      console.log('Restarting workers with new creds...');
+      await Promise.all(workers.map(w=>w.restart()));
 
     } catch {}
-  }, 10000);
+  },10000);
+}
+
+/* ---------------- NEW: PROXY HEALTH CHECKER ---------------- */
+
+function startProxyHealthCheck() {
+
+  setInterval(async () => {
+
+    try {
+
+      const testBrowser = await chromium.launch({
+        headless:true,
+        proxy:{
+          server:PROXY_SERVER,
+          username:`${CURRENT_USERNAME}-health`,
+          password:CURRENT_PASSWORD
+        }
+      });
+
+      const page = await testBrowser.newPage();
+
+      const res = await page.goto(IP_CHECK_URL,{timeout:15000}).catch(()=>null);
+
+      await testBrowser.close().catch(()=>{});
+
+      if (!res) throw "dead proxy";
+
+      console.log("Proxy health OK");
+
+    } catch {
+
+      console.log("Proxy health FAILED → starting polling");
+      startCredentialPolling();
+
+    }
+
+  },120000); // 2 minutes
 }
 
 /* ---------------- WORKER ---------------- */
 
-async function createWorker(tabIndex) {
+async function createWorker(tabIndex){
 
-  let browser, context, page;
-  let lastIP = null;
+  let browser,context,page;
+  let lastIP=null;
   let sessionId;
   let sessionUsername;
 
-  async function launch() {
-    try {
+  async function launch(){
+    try{
 
-      sessionId = randomSession();
-      sessionUsername = `${CURRENT_USERNAME}-session-${sessionId}`;
+      sessionId=randomSession();
+      sessionUsername=`${CURRENT_USERNAME}-session-${sessionId}`;
 
-      browser = await chromium.launch({
-        headless: false,
-        proxy: {
-          server: PROXY_SERVER,
-          username: sessionUsername,
-          password: CURRENT_PASSWORD
+      browser=await chromium.launch({
+        headless:false,
+        proxy:{
+          server:PROXY_SERVER,
+          username:sessionUsername,
+          password:CURRENT_PASSWORD
         },
-        args: ['--no-sandbox','--ignore-certificate-errors']
+        args:['--no-sandbox','--ignore-certificate-errors']
       });
 
-      context = await browser.newContext({ ignoreHTTPSErrors: true });
-      page = await context.newPage();
+      context=await browser.newContext({ignoreHTTPSErrors:true});
+      page=await context.newPage();
 
-      context.setDefaultTimeout(0);
-      page.setDefaultTimeout(0);
+      await page.goto(TARGET_URL,{waitUntil:'domcontentloaded',timeout:0}).catch(()=>{});
 
-      await page.goto(TARGET_URL,{ waitUntil:'domcontentloaded', timeout:0 }).catch(()=>{});
+      const res=await page.request.get(IP_CHECK_URL).catch(()=>null);
+      if(!res) throw "dead";
 
-      const res = await page.request.get(IP_CHECK_URL).catch(()=>null);
-      if (!res) throw 'proxy dead';
+      const data=await res.json().catch(()=>null);
+      if(!data) throw "dead";
 
-      const data = await res.json().catch(()=>null);
-      if (!data) throw 'proxy dead';
-
-      lastIP = data.ip;
+      lastIP=data.ip;
 
       console.log(`Tab ${tabIndex} started | ${sessionUsername} | IP ${lastIP}`);
 
-    } catch {
+    }catch{
       console.log(`Tab ${tabIndex} proxy failed.`);
-      await handleProxyFailure();
+      await startCredentialPolling();
       await restart();
     }
   }
 
-  async function restart() {
-    try { if (browser) await browser.close().catch(()=>{}); } catch {}
-    lastIP = null;
+  async function restart(){
+    try{ if(browser) await browser.close().catch(()=>{}); }catch{}
+    lastIP=null;
     await launch();
   }
 
-  async function handleProxyFailure() {
-    await startCredentialPolling();
-  }
+  function monitor(){
+    setInterval(async()=>{
+      try{
 
-  function monitor() {
-    setInterval(async () => {
-      try {
-
-        if (!page || page.isClosed()) {
+        if(!page || page.isClosed()){
           console.log(`Tab ${tabIndex} closed.`);
           return restart();
         }
 
-        const res = await page.request.get(IP_CHECK_URL).catch(()=>null);
-        if (!res) throw 'proxy dead';
+        const res=await page.request.get(IP_CHECK_URL).catch(()=>null);
+        if(!res) throw "dead";
 
-        const data = await res.json().catch(()=>null);
-        if (!data) throw 'proxy dead';
+        const data=await res.json().catch(()=>null);
+        if(!data) throw "dead";
 
-        const currentIP = data.ip;
+        const currentIP=data.ip;
 
-        if (lastIP && currentIP !== lastIP) {
+        if(lastIP && currentIP!==lastIP){
           console.log(`Tab ${tabIndex} IP changed ${lastIP} → ${currentIP}`);
-          lastIP = currentIP;
-
-          await page.goto(TARGET_URL,{ waitUntil:'domcontentloaded', timeout:0 }).catch(()=>{});
+          lastIP=currentIP;
+          await page.goto(TARGET_URL,{waitUntil:'domcontentloaded',timeout:0}).catch(()=>{});
         }
 
-      } catch {
+      }catch{
         console.log(`Tab ${tabIndex} proxy lost.`);
-        await handleProxyFailure();
+        await startCredentialPolling();
         await restart();
       }
-    }, 2000);
+    },2000);
   }
 
-  const workerObj = { restart };
-  workers.push(workerObj);
+  workers.push({restart});
 
   await launch();
   monitor();
@@ -195,22 +220,19 @@ async function createWorker(tabIndex) {
 
 /* ---------------- START ---------------- */
 
-(async () => {
+(async()=>{
 
-  await fetchInitialCreds(); // ⭐ initial credential fetch
+  await fetchInitialCreds();
+
+  startProxyHealthCheck(); // ⭐ independent checker
 
   console.log(`Launching ${TOTAL_TABS} workers...`);
 
   await Promise.all(
-    Array.from({ length: TOTAL_TABS }, (_, i) => createWorker(i))
+    Array.from({length:TOTAL_TABS},(_,i)=>createWorker(i))
   );
 
   console.log('All workers active.');
 
-  process.on('SIGINT', async () => {
-    console.log('\nShutting down...');
-    process.exit(0);
-  });
-
 })();
-            
+      
